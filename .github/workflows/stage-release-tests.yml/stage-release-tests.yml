@@ -1,0 +1,30 @@
+name: Stage-release script tests
+
+# stage-release.sh is the guardrail that keeps private repository names, internal
+# hosts, and IP addresses out of public release notes, and gives every release its
+# own commit. Its test suite (.github/scripts/stage-release.test.sh) currently runs
+# only when someone remembers to run it locally: no workflow in this repository
+# references it, and the intake test workflow's path filters do not cover
+# .github/scripts. Run it whenever the script or its tests change.
+
+on:
+  pull_request:
+    paths:
+      - .github/scripts/**
+      - .github/workflows/stage-release-tests.yml
+  push:
+    branches: [main]
+    paths:
+      - .github/scripts/**
+      - .github/workflows/stage-release-tests.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: .github/scripts/stage-release.test.sh
