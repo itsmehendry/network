@@ -1,0 +1,69 @@
+name: Spec admission check
+
+# Guards the drift reported in the runtime-admission issue: the tooling a user
+# installs must admit the runtimes that are actually live. This workflow reads
+# each live chain's specVersion from its public RPC and checks membership in
+# the SUPPORTED_SPEC_VERSIONS list published in the npm SDK's
+# dist/runtime-compatibility.js. The list is not contiguous (1014028 was never
+# activated), so membership is tested, not the range. It fails when the latest
+# published SDK no longer admits a live runtime, which is exactly the state
+# the v0.6.0-era tooling was in against devnet 1014034 / testnet 1014035.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+  pull_request:
+    paths:
+      - "releases/**"
+      - ".github/workflows/spec-admission-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+      - name: Check published SDK against live runtimes
+        run: |
+          cat > check-spec-admission.mjs <<'EOF'
+          const CHAINS = [
+            { name: "devnet", rpc: "https://rpc.devnet.flop.network" },
+            { name: "testnet", rpc: "https://testnet.flop.network" },
+          ];
+          async function liveSpec(rpc) {
+            const res = await fetch(rpc, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "state_getRuntimeVersion", params: [] }),
+            });
+            if (!res.ok) throw new Error(`RPC ${rpc} answered HTTP ${res.status}`);
+            return (await res.json()).result.specVersion;
+          }
+          async function admittedSpecs(version) {
+            const url = `https://unpkg.com/@flop-labs/sdk@${version}/dist/runtime-compatibility.js`;
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`SDK compat file answered HTTP ${res.status}`);
+            const m = (await res.text()).match(/SUPPORTED_SPEC_VERSIONS\s*=\s*Object\.freeze\(\[([^\]]+)\]\)/);
+            if (!m) throw new Error("SUPPORTED_SPEC_VERSIONS not found in compat file");
+            return m[1].split(",").map((s) => Number(s.trim().replace(/_/g, ""))).filter(Number.isFinite);
+          }
+          const meta = await (await fetch("https://registry.npmjs.org/@flop-labs/sdk/latest")).json();
+          const admitted = await admittedSpecs(meta.version);
+          console.log(`@flop-labs/sdk ${meta.version} admits ${admitted.length} spec versions`);
+          let failed = false;
+          for (const chain of CHAINS) {
+            const spec = await liveSpec(chain.rpc);
+            const ok = admitted.includes(spec);
+            console.log(`${chain.name} live spec ${spec}: ${ok ? "ADMITTED" : "NOT ADMITTED"}`);
+            if (!ok) failed = true;
+          }
+          if (failed) { console.error("FAIL: published SDK does not admit a live runtime."); process.exit(1); }
+          console.log("PASS: published SDK admits every live runtime.");
+          EOF
+          node check-spec-admission.mjs
